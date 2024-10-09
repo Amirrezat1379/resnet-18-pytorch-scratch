@@ -25,7 +25,7 @@ class ConvPoolAc(nn.Module):
 
         self.layer = nn.Sequential(
             nn.Conv2d(chanIn, chanOut, kernel_size=kernel,
-                stride=stride, padding=padding, bias=False),
+                stride=stride, padding=padding, bias=False),  
             nn.MaxPool2d(2, stride=2, ceil_mode=p_ceil_mode), #ksize, stride
             nn.ReLU(True)
         )
@@ -62,19 +62,22 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.backbone = nn.ModuleList()
         self.exits = nn.ModuleList()
+        self.fast_inference_mode = False
+        self.exit_threshold = 0.5
 
     def make_backbone(self, block, layers, exit_place, num_classes = 10):
         self.inplanes = 64
         back_bone_layers = []
         i = 0
-        self.convMax1 = nn.Sequential(
+        back_bone_layers.append(nn.Sequential(
                         nn.Conv2d(3, 64, kernel_size = 3, stride = 2, padding = 1),
                         nn.BatchNorm2d(64),
                         nn.ReLU(),
-                        nn.MaxPool2d(kernel_size = 2, stride = 2, padding = 1))
+                        nn.MaxPool2d(kernel_size = 2, stride = 2, padding = 1)))
         i += 1
         if i in exit_place:
-            self.backbone.append(self.convMax1)
+            self.backbone.append(nn.Sequential(*back_bone_layers))
+            back_bone_layers = []
         back_bone_layers.append(self._make_layer(block, 64, layers[0], stride = 1))
         i += 1
         if i in exit_place:
@@ -91,20 +94,26 @@ class ResNet(nn.Module):
             self.backbone.append(nn.Sequential(*back_bone_layers))
             back_bone_layers = []
         back_bone_layers.append(self._make_layer(block, 512, layers[3], stride = 2))
-        back_bone_layers.append(nn.AvgPool2d(7, stride=1))
-        i += 1
-        if i in exit_place:
-            self.backbone.append(nn.Sequential(*back_bone_layers))
-            back_bone_layers = []
+        # back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
+        back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
+        back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
+        back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
+        self.backbone.append(nn.Sequential(*back_bone_layers))
+        # self.backbone.append(*back_bone_layers)
+        back_bone_layers = []
         # self.fc = nn.Linear(512, num_classes)
-        self.make_exits(exit_place=exit_place)
+        self.make_exits(exit_place=exit_place, num_classes=num_classes)
+        # torch.set_printoptions(threshold=10_000)
+        # print(self.backbone)
 
-    def make_exits(self, exit_place):
+    def make_exits(self, exit_place, num_classes):
         early_exits = nn.ModuleList()
         early_exits.append(nn.Sequential(
-            ConvPoolAc(chanIn=64, chanOut=10, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
+            ConvPoolAc(chanIn=64, chanOut=32, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
+            ConvPoolAc(chanIn=32, chanOut=5, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
             nn.Flatten(),
-            nn.Linear(160,100)
+            nn.Linear(980, 80),
+            nn.Linear(80,10)
         ))
         early_exits.append(nn.Sequential(
             nn.MaxPool2d(2, stride=2), #ksize, stride
@@ -114,20 +123,23 @@ class ResNet(nn.Module):
             nn.Linear(64,10)
         ))
         early_exits.append(nn.Sequential(
-            ConvPoolAc(128, 64, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
+            ConvPoolAc(128, 32, kernel=3, stride=2, padding=0), #, p_ceil_mode=True),
             nn.Flatten(),
-            nn.Linear(256,100)
+            nn.Linear(1568,32),
+            nn.Linear(32, 10)
         ))
         early_exits.append(nn.Sequential(
             ConvPoolAc(256, 64, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
             nn.Flatten(),
+            nn.Linear(3136, 64),
             nn.Linear(64,10)
         ))
         # print(early_exits[1])
-        for i in exit_place:
-            self.exits.append(early_exits[i - 1])
+        if len(early_exits) > 0:
+            for i in exit_place:
+                self.exits.append(early_exits[i - 1])
         self.exits.append(nn.Sequential(
-            nn.Linear(512,10)
+            nn.Linear(512,num_classes)
         ))
 
         
@@ -139,40 +151,83 @@ class ResNet(nn.Module):
                 nn.Conv2d(self.inplanes, planes, kernel_size=1, stride=stride),
                 nn.BatchNorm2d(planes),
             )
+        # print(f'plains = {planes}, inplanes = {self.inplanes}')
         layers = []
         layers.append(block(self.inplanes, planes, stride, shortcut))
         self.inplanes = planes
         for i in range(1, blocks):
+            print(f"i = {i}")
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
     
-    
-    def forward(self, x):
-        # x = self.conv1(x)
-        # x = self.maxpool(x)
-        # x = self.layer0(x)
-        # x = self.layer1(x)
-        # x = self.layer2(x)
-        # x = self.layer3(x)
+    def exit_criterion_top1(self, x):
+        with torch.no_grad():
+            pk = nn.functional.softmax(x, dim=-1)
+            top1 = torch.max(pk) #x)
+            return top1 > self.exit_threshold
 
-        # x = self.avgpool(x)
-        # x = x.view(x.size(0), -1)
-        # x = self.fc(x)
-
-        result = []
-        for back_bone, current_exit in zip(self.backbone, self.exits):
-            # print("salam")
-            # print(x.shape)
-            back_bone = back_bone.to(device)
-            current_exit = current_exit.to(device)
-            x = back_bone(x)
-            # print(x.size())
-            if x.size() == torch.Size([512, 512, 1, 1]):
+    def _forward_training(self, x):
+        res = []
+        for backbone, current_early_exit in zip(self.backbone, self.exits):
+            backbone = backbone.to(device)
+            current_early_exit = current_early_exit.to(device)
+            x = backbone(x) 
+            if x.size()[2:4] == torch.Size([1, 1]):
                 x = x.view(x.size(0), -1)
-            q = current_exit(x)
-            result.append(q)
-        return result
+            res.append(current_early_exit(x))
+        return res
+
+    def forward(self, x):
+        #std forward function - add var to distinguish be test and inf
+
+        if self.fast_inference_mode:
+            for backbone, current_early_exit in zip(self.backbone, self.exits):
+                backbone = backbone.to(device)
+                current_early_exit = current_early_exit.to(device)
+                x = backbone(x)
+                if x.size()[2:4] == torch.Size([1, 1]):
+                    x = x.view(x.size(0), -1)
+                res = current_early_exit(x)
+                if self.exit_criterion_top1(res):
+                    return res, 1
+            return res, 0
+        else:
+            return self._forward_training(x)
+    
+    
+    # def forward(self, x):
+    #     # x = self.conv1(x)
+    #     # x = self.maxpool(x)
+    #     # x = self.layer0(x)
+    #     # x = self.layer1(x)
+    #     # x = self.layer2(x)
+    #     # x = self.layer3(x)
+
+    #     # x = self.avgpool(x)
+    #     # x = x.view(x.size(0), -1)
+    #     # x = self.fc(x)
+    #     # print(x.shape)
+
+    #     result = []
+    #     for back_bone, current_exit in zip(self.backbone, self.exits):
+    #         # print("salam")
+    #         # print(x.shape)
+    #         back_bone = back_bone.to(device)
+    #         current_exit = current_exit.to(device)
+    #         x = back_bone(x)
+    #         if x.size()[2:4] == torch.Size([1, 1]):
+    #             x = x.view(x.size(0), -1)
+    #         # print(x.size())
+    #         q = current_exit(x)
+    #         result.append(q)
+    #     return result
+    
+    def set_inference_parameters(self, mode=True, thresh=0.5):
+        # if mode:
+        #     self.eval()
+        self.fast_inference_mode = mode
+        self.exit_threshold = thresh
 
         # return x
     
@@ -189,15 +244,15 @@ def data_loader(data_dir,
     )
     data_model = data_model.lower()
     # define transforms
-    # transform = transforms.Compose([
-    #         # transforms.Resize((224,224)),
-    #         transforms.ToTensor(),
-    #         # transforms.Lambda(lambda x: x.repeat(3,1,1)),
-    #         # normalize,
-    # ])
-    transform = transforms.Compose([transforms.ToTensor(),
-                                    transforms.Normalize((0.5,), (0.5,))
-                                    ])
+    transform = transforms.Compose([
+            transforms.Resize((224,224)),
+            transforms.ToTensor(),
+            # transforms.Lambda(lambda x: x.repeat(3,1,1)),
+            normalize,
+    ])
+    # transform = transforms.Compose([transforms.ToTensor(),
+    #                                 transforms.Normalize((0.5,), (0.5,))
+    #                                 ])
 
     if test:
         if data_model == "cifar10":
