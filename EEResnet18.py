@@ -56,6 +56,23 @@ class ResidualBlock(nn.Module):
         out += residual
         out = self.relu(out)
         return out
+    
+class OutPutBlock(nn.Module):
+    def __init__(self, in_features=720, out_features=10):
+        super(OutPutBlock, self).__init__()
+        self.confidence = nn.Sequential(
+            nn.Linear(in_features, 1),
+            nn.Sigmoid(),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(in_features, out_features),
+            nn.Softmax(dim=1),
+        )
+
+    def forward(self, x):
+        conf = self.confidence(x)
+        pred = self.classifier(x)
+        return pred
             
 class ResNet(nn.Module):
     def __init__(self):
@@ -95,9 +112,6 @@ class ResNet(nn.Module):
             back_bone_layers = []
         back_bone_layers.append(self._make_layer(block, 512, layers[3], stride = 2))
         # back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
-        back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
-        back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
-        back_bone_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
         self.backbone.append(nn.Sequential(*back_bone_layers))
         # self.backbone.append(*back_bone_layers)
         back_bone_layers = []
@@ -108,39 +122,39 @@ class ResNet(nn.Module):
 
     def make_exits(self, exit_place, num_classes):
         early_exits = nn.ModuleList()
-        early_exits.append(nn.Sequential(
-            ConvPoolAc(chanIn=64, chanOut=32, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
-            ConvPoolAc(chanIn=32, chanOut=5, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
-            nn.Flatten(),
-            nn.Linear(980, 80),
-            nn.Linear(80,10)
+        early_exits.append(nn.ModuleList([nn.Sequential(
+            ConvPoolAc(chanIn=64, chanOut=32, kernel=3, stride=1, padding=0), #, p_ceil_mode=True),
+            ConvPoolAc(chanIn=32, chanOut=5, kernel=3, stride=1, padding=0)), #, p_ceil_mode=True)
+            nn.Sequential(
+            OutPutBlock(720, num_classes))]
         ))
-        early_exits.append(nn.Sequential(
-            nn.MaxPool2d(2, stride=2), #ksize, stride
-            nn.ReLU(True),
-            ConvPoolAc(64, 16, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
-            nn.Flatten(),
-            nn.Linear(64,10)
+        early_exits.append(nn.ModuleList([nn.Sequential(
+            ConvPoolAc(chanIn=64, chanOut=32, kernel=3, stride=1, padding=0), #, p_ceil_mode=True),
+            ConvPoolAc(chanIn=32, chanOut=5, kernel=3, stride=1, padding=0)), #, p_ceil_mode=True)
+            nn.Sequential(OutPutBlock(720, num_classes))]
         ))
-        early_exits.append(nn.Sequential(
-            ConvPoolAc(128, 32, kernel=3, stride=2, padding=0), #, p_ceil_mode=True),
-            nn.Flatten(),
-            nn.Linear(1568,32),
-            nn.Linear(32, 10)
+        early_exits.append(nn.ModuleList([nn.Sequential(
+            ConvPoolAc(128, 32, kernel=3, stride=2, padding=0),), #, p_ceil_mode=True),
+            nn.Sequential(
+            nn.Linear(1568,720),
+            OutPutBlock(720, num_classes))]
         ))
-        early_exits.append(nn.Sequential(
-            ConvPoolAc(256, 64, kernel=3, stride=1, padding=1), #, p_ceil_mode=True),
-            nn.Flatten(),
-            nn.Linear(3136, 64),
-            nn.Linear(64,10)
+        early_exits.append(nn.ModuleList([nn.Sequential(
+            ConvPoolAc(256, 64, kernel=3, stride=1, padding=1)), #, p_ceil_mode=True),
+            nn.Sequential(
+            nn.Linear(3136, 720),
+            OutPutBlock(720, num_classes))]
         ))
         # print(early_exits[1])
         if len(early_exits) > 0:
             for i in exit_place:
                 self.exits.append(early_exits[i - 1])
-        self.exits.append(nn.Sequential(
-            nn.Linear(512,num_classes)
-        ))
+        self.exits.append(nn.ModuleList([nn.Sequential(
+        nn.AvgPool2d(kernel_size=2, stride=2),
+        nn.AvgPool2d(kernel_size=2, stride=2),
+        nn.AvgPool2d(kernel_size=2, stride=2)),(nn.Sequential(
+            OutPutBlock(512, num_classes)
+        ))]))
 
         
     def _make_layer(self, block, planes, blocks, stride=1):
@@ -156,7 +170,7 @@ class ResNet(nn.Module):
         layers.append(block(self.inplanes, planes, stride, shortcut))
         self.inplanes = planes
         for i in range(1, blocks):
-            print(f"i = {i}")
+            # print(f"i = {i}")
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
@@ -171,11 +185,12 @@ class ResNet(nn.Module):
         res = []
         for backbone, current_early_exit in zip(self.backbone, self.exits):
             backbone = backbone.to(device)
-            current_early_exit = current_early_exit.to(device)
-            x = backbone(x) 
-            if x.size()[2:4] == torch.Size([1, 1]):
-                x = x.view(x.size(0), -1)
-            res.append(current_early_exit(x))
+            current_early_exit[0] = current_early_exit[0].to(device)
+            current_early_exit[1] = current_early_exit[1].to(device)
+            x = backbone(x)
+            y = current_early_exit[0](x)
+            y = y.view(y.size(0), -1)
+            res.append(current_early_exit[1](y))
         return res
 
     def forward(self, x):
@@ -184,11 +199,12 @@ class ResNet(nn.Module):
         if self.fast_inference_mode:
             for backbone, current_early_exit in zip(self.backbone, self.exits):
                 backbone = backbone.to(device)
-                current_early_exit = current_early_exit.to(device)
+                current_early_exit[0] = current_early_exit[0].to(device)
+                current_early_exit[1] = current_early_exit[1].to(device)
                 x = backbone(x)
-                if x.size()[2:4] == torch.Size([1, 1]):
-                    x = x.view(x.size(0), -1)
-                res = current_early_exit(x)
+                x = current_early_exit[0](x)
+                x = x.view(x.size(0), -1)
+                res = current_early_exit[1](x)
                 if self.exit_criterion_top1(res):
                     return res, 1
             return res, 0
