@@ -8,25 +8,14 @@ from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data.sampler import SubsetRandomSampler
 
-if torch.backends.mps.is_available():
-    device = "mps"
-elif torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
-
-print(f"Setting RESNET-18 device as {device}")
-
-device = torch.device(device)
-
 class ConvPoolAc(nn.Module):
-    def __init__(self, chanIn, chanOut, kernel=3, stride=1, padding=1, p_ceil_mode=False):
+    def __init__(self, chanIn, chanOut, kernel=3, stride=1, padding=1, p_ceil_mode=False, pool_pad=0):
         super(ConvPoolAc, self).__init__()
 
         self.layer = nn.Sequential(
             nn.Conv2d(chanIn, chanOut, kernel_size=kernel,
                 stride=stride, padding=padding, bias=False),  
-            nn.MaxPool2d(2, stride=2, ceil_mode=p_ceil_mode), #ksize, stride
+            nn.MaxPool2d(2, stride=2, ceil_mode=p_ceil_mode, padding=pool_pad), #ksize, stride
             nn.ReLU(True)
         )
 
@@ -93,7 +82,7 @@ class ResNet(nn.Module):
                         nn.MaxPool2d(kernel_size = 2, stride = 2, padding = 1)))
         i += 1
         if i in exit_place:
-            self.backbone.append(nn.Sequential(*back_bone_layers))
+            self.backbone.append(back_bone_layers[0])
             back_bone_layers = []
         back_bone_layers.append(self._make_layer(block, 64, layers[0], stride = 1))
         i += 1
@@ -124,26 +113,29 @@ class ResNet(nn.Module):
         early_exits = nn.ModuleList()
         early_exits.append(nn.ModuleList([nn.Sequential(
             ConvPoolAc(chanIn=64, chanOut=32, kernel=3, stride=1, padding=0), #, p_ceil_mode=True),
-            ConvPoolAc(chanIn=32, chanOut=5, kernel=3, stride=1, padding=0)), #, p_ceil_mode=True)
-            nn.Sequential(
-            OutPutBlock(720, num_classes))]
+            ConvPoolAc(chanIn=32, chanOut=16, kernel=3, stride=1, padding=0)), #, p_ceil_mode=True)
+            nn.Sequential(nn.Linear(2304, 512),
+                          OutPutBlock(512, num_classes))]
         ))
         early_exits.append(nn.ModuleList([nn.Sequential(
             ConvPoolAc(chanIn=64, chanOut=32, kernel=3, stride=1, padding=0), #, p_ceil_mode=True),
-            ConvPoolAc(chanIn=32, chanOut=5, kernel=3, stride=1, padding=0)), #, p_ceil_mode=True)
-            nn.Sequential(OutPutBlock(720, num_classes))]
+            ConvPoolAc(chanIn=32, chanOut=16, kernel=3, stride=1, padding=0)), #, p_ceil_mode=True)
+            nn.Sequential(nn.Linear(2304, 512),
+                          OutPutBlock(512, num_classes))]
         ))
         early_exits.append(nn.ModuleList([nn.Sequential(
-            ConvPoolAc(128, 32, kernel=3, stride=2, padding=0),), #, p_ceil_mode=True),
+            nn.MaxPool2d(2, stride=2, padding=1),
+            ConvPoolAc(128, 32, kernel=3, stride=1, padding=1, pool_pad=1)), #, p_ceil_mode=True),
             nn.Sequential(
-            nn.Linear(1568,720),
-            OutPutBlock(720, num_classes))]
+            nn.Linear(2048,512),
+            OutPutBlock(512, num_classes))]
         ))
         early_exits.append(nn.ModuleList([nn.Sequential(
-            ConvPoolAc(256, 64, kernel=3, stride=1, padding=1)), #, p_ceil_mode=True),
+            nn.MaxPool2d(2, stride=2, padding=1),
+            ConvPoolAc(256, 64, kernel=3, stride=1, padding=1, pool_pad=0)), #, p_ceil_mode=True),
             nn.Sequential(
-            nn.Linear(3136, 720),
-            OutPutBlock(720, num_classes))]
+            nn.Linear(1024,512),
+            OutPutBlock(512, num_classes))]
         ))
         # print(early_exits[1])
         if len(early_exits) > 0:
@@ -184,9 +176,6 @@ class ResNet(nn.Module):
     def _forward_training(self, x):
         res = []
         for backbone, current_early_exit in zip(self.backbone, self.exits):
-            backbone = backbone.to(device)
-            current_early_exit[0] = current_early_exit[0].to(device)
-            current_early_exit[1] = current_early_exit[1].to(device)
             x = backbone(x)
             y = current_early_exit[0](x)
             y = y.view(y.size(0), -1)
@@ -198,9 +187,6 @@ class ResNet(nn.Module):
 
         if self.fast_inference_mode:
             for backbone, current_early_exit in zip(self.backbone, self.exits):
-                backbone = backbone.to(device)
-                current_early_exit[0] = current_early_exit[0].to(device)
-                current_early_exit[1] = current_early_exit[1].to(device)
                 x = backbone(x)
                 x = current_early_exit[0](x)
                 x = x.view(x.size(0), -1)
@@ -229,8 +215,8 @@ class ResNet(nn.Module):
     #     for back_bone, current_exit in zip(self.backbone, self.exits):
     #         # print("salam")
     #         # print(x.shape)
-    #         back_bone = back_bone.to(device)
-    #         current_exit = current_exit.to(device)
+    #         back_bone = back_bone
+    #         current_exit = current_exit
     #         x = back_bone(x)
     #         if x.size()[2:4] == torch.Size([1, 1]):
     #             x = x.view(x.size(0), -1)
