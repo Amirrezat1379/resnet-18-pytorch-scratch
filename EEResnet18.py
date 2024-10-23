@@ -132,7 +132,7 @@ class ResNet(nn.Module):
         ))
         early_exits.append(nn.ModuleList([nn.Sequential(
             nn.MaxPool2d(2, stride=2, padding=1),
-            ConvPoolAc(256, 64, kernel=3, stride=1, padding=1, pool_pad=0)), #, p_ceil_mode=True),
+            ConvPoolAc(256, 64, kernel=3, stride=1, padding=1)), #, p_ceil_mode=True),
             nn.Sequential(
             nn.Linear(1024,512),
             OutPutBlock(512, num_classes))]
@@ -197,41 +197,9 @@ class ResNet(nn.Module):
         else:
             return self._forward_training(x)
     
-    
-    # def forward(self, x):
-    #     # x = self.conv1(x)
-    #     # x = self.maxpool(x)
-    #     # x = self.layer0(x)
-    #     # x = self.layer1(x)
-    #     # x = self.layer2(x)
-    #     # x = self.layer3(x)
-
-    #     # x = self.avgpool(x)
-    #     # x = x.view(x.size(0), -1)
-    #     # x = self.fc(x)
-    #     # print(x.shape)
-
-    #     result = []
-    #     for back_bone, current_exit in zip(self.backbone, self.exits):
-    #         # print("salam")
-    #         # print(x.shape)
-    #         back_bone = back_bone
-    #         current_exit = current_exit
-    #         x = back_bone(x)
-    #         if x.size()[2:4] == torch.Size([1, 1]):
-    #             x = x.view(x.size(0), -1)
-    #         # print(x.size())
-    #         q = current_exit(x)
-    #         result.append(q)
-    #     return result
-    
     def set_inference_parameters(self, mode=True, thresh=0.5):
-        # if mode:
-        #     self.eval()
         self.fast_inference_mode = mode
         self.exit_threshold = thresh
-
-        # return x
     
 def data_loader(data_dir,
                 batch_size,
